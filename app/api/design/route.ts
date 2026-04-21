@@ -30,29 +30,6 @@ budget ceiling: $${budget}
 Return a JSON object with the full styling plan.`;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isOverloadError(err: unknown): boolean {
-  if (!err) return false;
-  const anyErr = err as { status?: number; message?: string };
-  const status = anyErr.status;
-  if (status === 503 || status === 529 || status === 502 || status === 504 || status === 429) {
-    return true;
-  }
-  const msg = (anyErr.message ?? String(err)).toLowerCase();
-  return (
-    msg.includes("overloaded") ||
-    msg.includes("high demand") ||
-    msg.includes("service unavailable") ||
-    msg.includes("quota") ||
-    msg.includes("rate limit") ||
-    msg.includes("503") ||
-    msg.includes("529")
-  );
-}
-
 export async function POST(req: Request) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -81,16 +58,16 @@ export async function POST(req: Request) {
   }
 
   const genAI = new GoogleGenerativeAI(apiKey);
-
   const model = genAI.getGenerativeModel({
     model: MODEL,
     systemInstruction: SYSTEM_PROMPT,
     generationConfig: {
       responseMimeType: "application/json",
-    } as Record<string, unknown>,
+    },
   });
 
-  async function callOnce(): Promise<unknown> {
+  let design: DesignResponse;
+  try {
     const result = await model.generateContent([
       {
         inlineData: {
@@ -101,42 +78,13 @@ export async function POST(req: Request) {
       buildUserPrompt(vibe, budget),
     ]);
     const text = result.response.text();
-    return JSON.parse(text);
-  }
-
-  async function callWithRetry(): Promise<unknown> {
-    const delays = [2000, 4000, 8000];
-    let lastErr: unknown = null;
-    for (let attempt = 0; attempt <= delays.length; attempt++) {
-      try {
-        return await callOnce();
-      } catch (err) {
-        lastErr = err;
-        if (attempt < delays.length && isOverloadError(err)) {
-          await sleep(delays[attempt]);
-          continue;
-        }
-        throw err;
-      }
-    }
-    throw lastErr;
-  }
-
-  let design: DesignResponse;
-  try {
-    const raw = await callWithRetry();
+    const raw = JSON.parse(text);
     design = validateDesign(raw);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const anyErr = err as { status?: number };
-    const isOverload = isOverloadError(err);
     return NextResponse.json(
-      {
-        error: isOverload
-          ? "the design model is busy right now. please try again in a moment."
-          : `design generation failed: ${message}`,
-      },
-      { status: anyErr.status && anyErr.status >= 500 ? 503 : 502 },
+      { error: `design generation failed: ${message}` },
+      { status: 502 },
     );
   }
 
