@@ -20,10 +20,10 @@ export function validateDesign(value: unknown): DesignResponse {
   const description = requireString(value, "description");
   const imagePrompt = requireString(value, "imagePrompt");
 
-  const moodWords = requireStringArray(value, "moodWords");
-  const changesNeeded = requireStringArray(value, "changesNeeded");
+  const moodWords = optionalStringArray(value, "moodWords");
+  const changesNeeded = optionalStringArray(value, "changesNeeded");
 
-  const colorPalette = requireArray(value, "colorPalette").map(validateSwatch);
+  const colorPalette = optionalArray(value, "colorPalette").map(validateSwatch);
   const items = requireArray(value, "items").map(validateItem);
 
   if (items.length < 1) throw new Error("items array is empty");
@@ -99,12 +99,24 @@ function requireArray(obj: Record<string, unknown>, key: string): unknown[] {
   return v;
 }
 
+function optionalArray(obj: Record<string, unknown>, key: string): unknown[] {
+  const v = obj[key];
+  if (!Array.isArray(v)) return [];
+  return v;
+}
+
 function requireStringArray(obj: Record<string, unknown>, key: string): string[] {
   const arr = requireArray(obj, key);
   return arr.map((v, i) => {
     if (typeof v !== "string") throw new Error(`${key}[${i}] is not a string`);
     return v;
   });
+}
+
+function optionalStringArray(obj: Record<string, unknown>, key: string): string[] {
+  const v = obj[key];
+  if (!Array.isArray(v)) return [];
+  return v.filter((item): item is string => typeof item === "string");
 }
 
 function clampPct(n: number): number {
