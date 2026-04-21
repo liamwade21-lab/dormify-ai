@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { extractJson, validateDesign } from "@/lib/validate";
 import type { DesignApiRequest, DesignResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const MODEL = "claude-sonnet-4-5";
+const MODEL = "gemini-2.5-flash";
 
 const SYSTEM_PROMPT = `You are the creative director for Dormify AI, a room redesign tool for college students and young renters. You study a room photo and return a styling plan as strict JSON.
 
@@ -57,10 +57,10 @@ CRITICAL: Your previous response was not valid JSON. Respond with ONLY the JSON 
 }
 
 export async function POST(req: Request) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
-      { error: "ANTHROPIC_API_KEY is not set on the server" },
+      { error: "GEMINI_API_KEY is not set on the server" },
       { status: 500 },
     );
   }
@@ -83,7 +83,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "budget must be a positive number" }, { status: 400 });
   }
 
-  const anthropic = new Anthropic({ apiKey });
+  const genai = new GoogleGenerativeAI(apiKey);
+  const model = genai.getGenerativeModel({
+    model: MODEL,
+    systemInstruction: SYSTEM_PROMPT,
+    generationConfig: {
+      responseMimeType: "application/json",
+      temperature: 0.9,
+      maxOutputTokens: 4096,
+    },
+  });
 
   function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -102,37 +111,22 @@ export async function POST(req: Request) {
       msg.includes("high demand") ||
       msg.includes("service unavailable") ||
       msg.includes("503") ||
-      msg.includes("529")
+      msg.includes("429") ||
+      msg.includes("quota")
     );
   }
 
   async function callOnce(userText: string): Promise<string> {
-    const msg = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: "image/jpeg",
-                data: image,
-              },
-            },
-            { type: "text", text: userText },
-          ],
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType: "image/jpeg",
+          data: image,
         },
-      ],
-    });
-
-    const text = msg.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("\n");
+      },
+      { text: userText },
+    ]);
+    const text = result.response.text();
     if (!text) throw new Error("empty model response");
     return text;
   }
@@ -169,7 +163,6 @@ export async function POST(req: Request) {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const anyErr = err as { status?: number };
     const isOverload = isOverloadError(err);
     return NextResponse.json(
       {
@@ -177,7 +170,7 @@ export async function POST(req: Request) {
           ? "the design model is busy right now. please try again in a moment."
           : `design generation failed: ${message}`,
       },
-      { status: anyErr.status && anyErr.status >= 500 ? 503 : 502 },
+      { status: 503 },
     );
   }
 
