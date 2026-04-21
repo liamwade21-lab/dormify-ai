@@ -35,7 +35,7 @@ const BUDGET_PRESETS = [
   { label: "under $1k", value: 1000 },
 ];
 
-type Phase = "idle" | "loading-design" | "loading-render" | "results" | "error";
+type Phase = "idle" | "loading-design" | "results" | "error";
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
@@ -50,8 +50,6 @@ export default function Home() {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [design, setDesign] = useState<DesignResponse | null>(null);
-  const [renderedImage, setRenderedImage] = useState<string | null>(null);
-  const [imageFailed, setImageFailed] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [pinsReady, setPinsReady] = useState(false);
 
@@ -89,13 +87,11 @@ export default function Home() {
   })();
 
   const canGenerate =
-    !!base64 && effectiveVibe.length > 0 && effectiveBudget > 0 && !resizing && phase !== "loading-design" && phase !== "loading-render";
+    !!base64 && effectiveVibe.length > 0 && effectiveBudget > 0 && !resizing && phase !== "loading-design";
 
   async function handleGenerate() {
     if (!base64 || !effectiveVibe || !effectiveBudget) return;
     setErrorMsg(null);
-    setImageFailed(false);
-    setRenderedImage(null);
     setDesign(null);
     setPinsReady(false);
     setPhase("loading-design");
@@ -116,31 +112,6 @@ export default function Home() {
       }
       const designJson = (await designRes.json()) as DesignResponse;
       setDesign(designJson);
-
-      setPhase("loading-render");
-      try {
-        const renderRes = await fetch("/api/render", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            image: base64,
-            imagePrompt: designJson.imagePrompt,
-          }),
-        });
-        if (!renderRes.ok) {
-          throw new Error(await safeError(renderRes));
-        }
-        const renderJson = (await renderRes.json()) as { imageBase64: string };
-        setRenderedImage(`data:image/jpeg;base64,${renderJson.imageBase64}`);
-      } catch (renderErr) {
-        setImageFailed(true);
-        if (process.env.NODE_ENV !== "production") {
-          setErrorMsg(
-            renderErr instanceof Error ? renderErr.message : String(renderErr),
-          );
-        }
-      }
-
       setPhase("results");
     } catch (err) {
       setPhase("error");
@@ -157,8 +128,6 @@ export default function Home() {
     setBudget(null);
     setCustomBudget("");
     setDesign(null);
-    setRenderedImage(null);
-    setImageFailed(false);
     setPhase("idle");
     setErrorMsg(null);
     setPinsReady(false);
@@ -214,7 +183,6 @@ export default function Home() {
       ) : null}
 
       {phase === "loading-design" ? <LoadingOrb step="design" /> : null}
-      {phase === "loading-render" ? <LoadingOrb step="render" /> : null}
 
       {phase === "error" ? (
         <div
@@ -259,9 +227,7 @@ export default function Home() {
       {phase === "results" && design ? (
         <ResultsView
           design={design}
-          renderedImage={renderedImage}
-          fallback={preview}
-          imageFailed={imageFailed}
+          originalImage={preview}
           total={total}
           pinsReady={pinsReady}
           setPinsReady={setPinsReady}
@@ -486,9 +452,7 @@ function SectionLabel({ n, title }: { n: number; title: string }) {
 
 interface ResultsProps {
   design: DesignResponse;
-  renderedImage: string | null;
-  fallback: string | null;
-  imageFailed: boolean;
+  originalImage: string | null;
   total: number;
   pinsReady: boolean;
   setPinsReady: (v: boolean) => void;
@@ -498,103 +462,53 @@ interface ResultsProps {
 function ResultsView(props: ResultsProps) {
   const {
     design,
-    renderedImage,
-    fallback,
-    imageFailed,
+    originalImage,
     total,
     pinsReady,
     setPinsReady,
     debugError,
   } = props;
 
-  const displayImage = renderedImage ?? (imageFailed ? null : null);
-  const showPins = !!renderedImage;
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {displayImage ? (
-        <div
-          className="reveal"
-          style={{
-            position: "relative",
-            borderRadius: 20,
-            overflow: "hidden",
-            background: "var(--bg-card)",
-            border: "1px solid var(--border)",
-            boxShadow: "0 30px 60px rgba(0, 0, 0, 0.45)",
-          }}
-        >
-          {}
+      <div
+        className="reveal"
+        style={{
+          position: "relative",
+          borderRadius: 20,
+          overflow: "hidden",
+          background: "var(--bg-card)",
+          border: "1px solid var(--border)",
+          boxShadow: "0 30px 60px rgba(0, 0, 0, 0.45)",
+        }}
+      >
+        {originalImage ? (
           <img
-            src={displayImage}
-            alt={`your room, restyled as ${design.vibeName.toLowerCase()}`}
+            src={originalImage}
+            alt="your room"
             style={{ width: "100%", display: "block" }}
             onLoad={() => setPinsReady(true)}
           />
-          {showPins
-            ? design.items.map((item, i) => (
-                <PricePin
-                  key={`${item.name}-${i}`}
-                  item={item}
-                  index={i}
-                  ready={pinsReady}
-                />
-              ))
-            : null}
-        </div>
-      ) : (
-        <div
-          className="reveal"
-          style={{
-            position: "relative",
-            borderRadius: 20,
-            overflow: "hidden",
-            background: "var(--bg-card)",
-            border: "1px solid var(--border)",
-          }}
-        >
-          {fallback ? (
-            <img
-              src={fallback}
-              alt="your original room"
-              style={{ width: "100%", display: "block", opacity: 0.55 }}
-            />
-          ) : null}
+        ) : (
           <div
             style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: 20,
-              background:
-                "linear-gradient(180deg, rgba(10,9,7,0.2), rgba(10,9,7,0.85))",
+              width: "100%",
+              aspectRatio: "4 / 3",
+              background: "var(--bg-elevated)",
             }}
-          >
-            <div
-              style={{
-                textAlign: "center",
-                maxWidth: 360,
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: "var(--font-display)",
-                  fontWeight: 800,
-                  fontSize: 20,
-                  marginBottom: 6,
-                }}
-              >
-                visual preview unavailable
-              </div>
-              <div style={{ color: "var(--text-muted)", fontSize: 13 }}>
-                shopping list below ↓
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+          />
+        )}
+        {originalImage
+          ? design.items.map((item, i) => (
+              <PricePin
+                key={`${item.name}-${i}`}
+                item={item}
+                index={i}
+                ready={pinsReady}
+              />
+            ))
+          : null}
+      </div>
 
       <MoodCard design={design} />
 
@@ -645,8 +559,80 @@ function ResultsView(props: ResultsProps) {
         </div>
       </section>
 
+      <section className="reveal reveal-3">
+        <h2
+          style={{
+            fontFamily: "var(--font-display)",
+            fontSize: 22,
+            fontWeight: 800,
+            letterSpacing: "-0.02em",
+            margin: "0 0 12px",
+          }}
+        >
+          where each thing goes
+        </h2>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {design.items.map((item, i) => (
+            <div
+              key={`${item.name}-note-${i}`}
+              className="reveal"
+              style={{
+                display: "flex",
+                gap: 14,
+                padding: 14,
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                borderRadius: 14,
+                animationDelay: `${0.05 * i}s`,
+              }}
+            >
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 12,
+                  background: "var(--bg-elevated)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 22,
+                  flexShrink: 0,
+                  border: "1px solid var(--border)",
+                }}
+                aria-hidden
+              >
+                {item.emoji}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontWeight: 700,
+                    fontSize: 14,
+                    lineHeight: 1.3,
+                    marginBottom: 4,
+                  }}
+                >
+                  {item.name}
+                </div>
+                <div
+                  style={{
+                    color: "var(--text-muted)",
+                    fontSize: 13,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {item.placement.note
+                    ? item.placement.note.toLowerCase()
+                    : "place this where it feels right in the space."}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {design.changesNeeded.length > 0 ? (
-        <section className="reveal reveal-3">
+        <section className="reveal reveal-4">
           <h3
             style={{
               fontFamily: "var(--font-display)",
