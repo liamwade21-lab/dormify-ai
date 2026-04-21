@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import Anthropic from "@anthropic-ai/sdk";
 import { extractJson, validateDesign } from "@/lib/validate";
 import type { DesignApiRequest, DesignResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const MODEL = "gemini-2.5-flash";
+const MODEL = "claude-sonnet-4-5";
 
 const SYSTEM_PROMPT = `You are the creative director for Dormify AI, a room redesign tool for college students and young renters. You study a room photo and return a styling plan as strict JSON.
 
@@ -41,9 +41,9 @@ Return JSON matching this exact shape:
       "name": "specific product name",
       "description": "short reason it fits",
       "price": 29.99,
-      "store": "Amazon",
+      "store": "Amazon" | "Target" | "IKEA",
       "searchQuery": "keywords",
-      "emoji": "\u{1F6CB}",
+      "emoji": "🛋️",
       "placement": { "x": 45, "y": 60, "note": "where it goes, short phrase" }
     }
   ]
@@ -57,10 +57,10 @@ CRITICAL: Your previous response was not valid JSON. Respond with ONLY the JSON 
 }
 
 export async function POST(req: Request) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
-      { error: "GEMINI_API_KEY is not set on the server" },
+      { error: "ANTHROPIC_API_KEY is not set on the server" },
       { status: 500 },
     );
   }
@@ -83,46 +83,101 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "budget must be a positive number" }, { status: 400 });
   }
 
-  const genai = new GoogleGenerativeAI(apiKey);
-  const model = genai.getGenerativeModel({
-    model: MODEL,
-    systemInstruction: SYSTEM_PROMPT,
-    generationConfig: {
-      responseMimeType: "application/json",
-      temperature: 0.9,
-      maxOutputTokens: 4096,
-    },
-  });
+  const anthropic = new Anthropic({ apiKey });
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function isOverloadError(err: unknown): boolean {
+    if (!err) return false;
+    const anyErr = err as { status?: number; message?: string };
+    const status = anyErr.status;
+    if (status === 503 || status === 529 || status === 502 || status === 504 || status === 429) {
+      return true;
+    }
+    const msg = (anyErr.message ?? String(err)).toLowerCase();
+    return (
+      msg.includes("overloaded") ||
+      msg.includes("high demand") ||
+      msg.includes("service unavailable") ||
+      msg.includes("503") ||
+      msg.includes("529")
+    );
+  }
 
   async function callOnce(userText: string): Promise<string> {
-    const result = await model.generateContent([
-      {
-        inlineData: {
-          mimeType: "image/jpeg",
-          data: image,
+    const msg = await anthropic.messages.create({
+      model: MODEL,
+      max_tokens: 4096,
+      system: SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/jpeg",
+                data: image,
+              },
+            },
+            { type: "text", text: userText },
+          ],
         },
-      },
-      { text: userText },
-    ]);
-    const text = result.response.text();
+      ],
+    });
+
+    const text = msg.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
     if (!text) throw new Error("empty model response");
     return text;
   }
 
+  // Retry wrapper with exponential backoff for overload/503 style errors.
+  // Waits 2s, then 4s, then 8s. Up to 3 retries (4 total attempts).
+  async function callWithRetry(userText: string): Promise<string> {
+    const delays = [2000, 4000, 8000];
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        return await callOnce(userText);
+      } catch (err) {
+        lastErr = err;
+        if (attempt < delays.length && isOverloadError(err)) {
+          await sleep(delays[attempt]);
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
+  }
+
   let design: DesignResponse;
   try {
-    const raw = await callOnce(buildUserPrompt(vibe, budget));
+    const raw = await callWithRetry(buildUserPrompt(vibe, budget));
     try {
       design = validateDesign(extractJson(raw));
     } catch {
-      const raw2 = await callOnce(stricterRetryPrompt(vibe, budget));
+      // Second chance with stricter prompt. Retry logic still applies.
+      const raw2 = await callWithRetry(stricterRetryPrompt(vibe, budget));
       design = validateDesign(extractJson(raw2));
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const anyErr = err as { status?: number };
+    const isOverload = isOverloadError(err);
     return NextResponse.json(
-      { error: `design generation failed: ${message}` },
-      { status: 502 },
+      {
+        error: isOverload
+          ? "the design model is busy right now. please try again in a moment."
+          : `design generation failed: ${message}`,
+      },
+      { status: anyErr.status && anyErr.status >= 500 ? 503 : 502 },
     );
   }
 
