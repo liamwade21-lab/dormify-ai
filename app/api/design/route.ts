@@ -1,66 +1,135 @@
 import { NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import Anthropic from "@anthropic-ai/sdk";
 import { extractJson, validateDesign } from "@/lib/validate";
 import type { DesignApiRequest, DesignResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const MODEL = "gemini-2.5-flash";
+const PRIMARY_MODEL = "claude-sonnet-4-5";
+const FALLBACK_MODEL = "claude-haiku-4-5";
 
-const SYSTEM_PROMPT = `You are the creative director for Dormify AI, a room redesign tool for college students and young renters. You study a room photo and return a styling plan as strict JSON.
+const SYSTEM_PROMPT = `You are the creative director for Dormify AI, a room redesign tool for college students and young renters. You study a room photo and return a styling plan by calling the submit_design tool.
 
 Rules:
-- Output valid JSON only. No prose, no markdown fences.
-- Exactly 6 to 8 items.
+- Always call the submit_design tool. Do not respond with text.
+- Return exactly 6 to 8 items.
 - Total price must be under the user's budget but close to it (within 15 percent of the budget ceiling).
-- Mix categories: include lighting, textiles (rug/throw/curtains/bedding), wall decor, storage, and accents.
+- Mix categories: include lighting, textiles (rug, throw, curtains, bedding), wall decor, storage, and accents.
 - Use real, common product names you can find on Amazon, Target, or IKEA. Store must be exactly one of "Amazon", "Target", "IKEA".
 - placement.x and placement.y are percentages (0 to 100) from the top-left of the image where the price pin should sit, over the spot that item occupies in the redesigned room.
 - Spread the pins out. No two pins should overlap. Keep each pin at least 8 units away from every other pin on each axis.
-- imagePrompt is one dense paragraph describing the full redesigned room for an image model. Preserve the original layout, walls, windows, doors, perspective, and ceiling height. Only change furniture, textiles, lighting, wall art, and decor to match the vibe.
+- imagePrompt is one dense paragraph describing the full redesigned room. Preserve the original layout, walls, windows, doors, perspective, and ceiling height. Only change furniture, textiles, lighting, wall art, and decor to match the vibe.
 - Lowercase playful copy in vibeName, tagline, description, moodWords.
 - hex colors are #rrggbb.
-- emoji is one relevant emoji for the item.`;
+- emoji is one relevant emoji for the item.
+- Never use curly or smart quotes inside any string. Use plain ASCII characters only.`;
+
+// Tool schema that mirrors DesignResponse. Claude is forced to call this tool,
+// which guarantees we receive structured JSON and avoids hand-written parse errors.
+const DESIGN_TOOL: Anthropic.Tool = {
+  name: "submit_design",
+  description:
+    "Submit the full room redesign plan as structured data. Always call this tool with the complete design.",
+  input_schema: {
+    type: "object",
+    properties: {
+      vibeName: { type: "string", description: "2 to 4 words, lowercase" },
+      tagline: { type: "string", description: "one punchy sentence" },
+      description: {
+        type: "string",
+        description: "2 to 3 sentences about how the room will feel",
+      },
+      moodWords: {
+        type: "array",
+        items: { type: "string" },
+        description: "exactly five lowercase words",
+      },
+      colorPalette: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            hex: { type: "string", description: "format #rrggbb" },
+          },
+          required: ["name", "hex"],
+        },
+      },
+      changesNeeded: {
+        type: "array",
+        items: { type: "string" },
+        description: "short bullets about things to remove or modify",
+      },
+      imagePrompt: {
+        type: "string",
+        description: "one dense paragraph describing the redesigned room",
+      },
+      items: {
+        type: "array",
+        description: "6 to 8 product items",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "specific product name" },
+            description: { type: "string", description: "short reason it fits" },
+            price: { type: "number" },
+            store: {
+              type: "string",
+              enum: ["Amazon", "Target", "IKEA"],
+            },
+            searchQuery: { type: "string", description: "keywords" },
+            emoji: { type: "string", description: "one emoji" },
+            placement: {
+              type: "object",
+              properties: {
+                x: { type: "number", description: "0 to 100" },
+                y: { type: "number", description: "0 to 100" },
+                note: {
+                  type: "string",
+                  description: "where it goes, short phrase",
+                },
+              },
+              required: ["x", "y", "note"],
+            },
+          },
+          required: [
+            "name",
+            "description",
+            "price",
+            "store",
+            "searchQuery",
+            "emoji",
+            "placement",
+          ],
+        },
+      },
+    },
+    required: [
+      "vibeName",
+      "tagline",
+      "description",
+      "moodWords",
+      "colorPalette",
+      "changesNeeded",
+      "imagePrompt",
+      "items",
+    ],
+  },
+};
 
 function buildUserPrompt(vibe: string, budget: number): string {
   return `vibe: ${vibe}
 budget ceiling: $${budget}
 
-Return JSON matching this exact shape:
-{
-  "vibeName": "string, 2 to 4 words",
-  "tagline": "one punchy sentence",
-  "description": "2 to 3 sentences about how the room will feel",
-  "moodWords": ["five lowercase words"],
-  "colorPalette": [{ "name": "string", "hex": "#xxxxxx" }],
-  "changesNeeded": ["remove or modify instructions, short bullets"],
-  "imagePrompt": "a detailed natural language prompt describing the full redesigned room for an image model to render from the original photo",
-  "items": [
-    {
-      "name": "specific product name",
-      "description": "short reason it fits",
-      "price": 29.99,
-      "store": "Amazon" | "Target" | "IKEA",
-      "searchQuery": "keywords",
-      "emoji": "🛋️",
-      "placement": { "x": 45, "y": 60, "note": "where it goes, short phrase" }
-    }
-  ]
-}`;
-}
-
-function stricterRetryPrompt(vibe: string, budget: number): string {
-  return `${buildUserPrompt(vibe, budget)}
-
-CRITICAL: Your previous response was not valid JSON. Respond with ONLY the JSON object. Start your response with { and end with }. No text before or after. No code fences. No explanation.`;
+Call the submit_design tool with the full styling plan.`;
 }
 
 export async function POST(req: Request) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
-      { error: "GEMINI_API_KEY is not set on the server" },
+      { error: "ANTHROPIC_API_KEY is not set on the server" },
       { status: 500 },
     );
   }
@@ -83,16 +152,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "budget must be a positive number" }, { status: 400 });
   }
 
-  const genai = new GoogleGenerativeAI(apiKey);
-  const model = genai.getGenerativeModel({
-    model: MODEL,
-    systemInstruction: SYSTEM_PROMPT,
-    generationConfig: {
-      responseMimeType: "application/json",
-      temperature: 0.9,
-      maxOutputTokens: 4096,
-    },
-  });
+  const anthropic = new Anthropic({ apiKey });
 
   function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -111,41 +171,75 @@ export async function POST(req: Request) {
       msg.includes("high demand") ||
       msg.includes("service unavailable") ||
       msg.includes("503") ||
-      msg.includes("429") ||
-      msg.includes("quota")
+      msg.includes("529")
     );
   }
 
-  async function callOnce(userText: string): Promise<string> {
-    const result = await model.generateContent([
-      {
-        inlineData: {
-          mimeType: "image/jpeg",
-          data: image,
+  // Single call to the model with forced tool use. Returns the raw tool input
+  // object (already parsed by the SDK, so no JSON syntax errors possible).
+  async function callToolOnce(model: string, userText: string): Promise<unknown> {
+    const msg = await anthropic.messages.create({
+      model,
+      max_tokens: 4096,
+      system: SYSTEM_PROMPT,
+      tools: [DESIGN_TOOL],
+      tool_choice: { type: "tool", name: DESIGN_TOOL.name },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/jpeg",
+                data: image,
+              },
+            },
+            { type: "text", text: userText },
+          ],
         },
-      },
-      { text: userText },
-    ]);
-    const text = result.response.text();
-    if (!text) throw new Error("empty model response");
-    return text;
+      ],
+    });
+
+    for (const block of msg.content) {
+      if (block.type === "tool_use" && block.name === DESIGN_TOOL.name) {
+        return block.input;
+      }
+    }
+
+    // Very rare: model returned text instead of calling the tool. Try to
+    // pull JSON out of the text as a last resort.
+    const text = msg.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+    if (text) {
+      return extractJson(text);
+    }
+    throw new Error("model returned no tool call and no text");
   }
 
-  // Retry wrapper with exponential backoff for overload/503 style errors.
-  // Waits 2s, then 4s, then 8s. Up to 3 retries (4 total attempts).
-  async function callWithRetry(userText: string): Promise<string> {
+  // Retry wrapper. Retries on overload errors with backoff (2s, 4s, 8s).
+  // Falls back to the smaller model after the primary keeps failing.
+  async function callWithRetry(userText: string): Promise<unknown> {
     const delays = [2000, 4000, 8000];
     let lastErr: unknown = null;
     for (let attempt = 0; attempt <= delays.length; attempt++) {
       try {
-        return await callOnce(userText);
+        return await callToolOnce(PRIMARY_MODEL, userText);
       } catch (err) {
         lastErr = err;
         if (attempt < delays.length && isOverloadError(err)) {
           await sleep(delays[attempt]);
           continue;
         }
-        throw err;
+        // Not an overload, or ran out of retries. Try the fallback model once.
+        try {
+          return await callToolOnce(FALLBACK_MODEL, userText);
+        } catch (fallbackErr) {
+          throw fallbackErr;
+        }
       }
     }
     throw lastErr;
@@ -154,15 +248,10 @@ export async function POST(req: Request) {
   let design: DesignResponse;
   try {
     const raw = await callWithRetry(buildUserPrompt(vibe, budget));
-    try {
-      design = validateDesign(extractJson(raw));
-    } catch {
-      // Second chance with stricter prompt. Retry logic still applies.
-      const raw2 = await callWithRetry(stricterRetryPrompt(vibe, budget));
-      design = validateDesign(extractJson(raw2));
-    }
+    design = validateDesign(raw);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const anyErr = err as { status?: number };
     const isOverload = isOverloadError(err);
     return NextResponse.json(
       {
@@ -170,7 +259,7 @@ export async function POST(req: Request) {
           ? "the design model is busy right now. please try again in a moment."
           : `design generation failed: ${message}`,
       },
-      { status: 503 },
+      { status: anyErr.status && anyErr.status >= 500 ? 503 : 502 },
     );
   }
 
