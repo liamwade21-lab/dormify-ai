@@ -9,13 +9,19 @@ export const maxDuration = 60;
 // Tried in order. If one hits a quota or overload error, the next is tried.
 // Free tier quotas differ between models, so a chain helps a lot.
 // Note: gemini-1.5-flash was retired from the v1beta API and now returns 404,
-// so the chain uses only current 2.x models plus a lite fallback.
+// so the chain uses only current 2.x models.
+// Keep the chain short so total worst-case latency stays well under the
+// 60s Vercel function cap and the browser does not hit a 504 gateway timeout.
 const MODEL_CHAIN = [
   "gemini-2.5-flash",
   "gemini-2.0-flash",
   "gemini-2.5-flash-lite",
-  "gemini-2.0-flash-lite",
 ] as const;
+
+// Hard cap per model call. If Gemini takes longer than this, we abort and
+// fall through to the next model instead of letting the whole serverless
+// function time out.
+const PER_CALL_TIMEOUT_MS = 15000;
 
 const SYSTEM_PROMPT = `You are the creative director for Dormify AI, a room redesign tool for college students and young renters. You study a room photo and return a styling plan as structured JSON that matches the provided schema.
 
@@ -191,6 +197,7 @@ export async function POST(req: Request) {
   }
 
   // One call to a specific model. Returns parsed JSON.
+  // Enforces PER_CALL_TIMEOUT_MS so a slow model cannot hold up the chain.
   async function callOnce(modelName: string, userText: string): Promise<unknown> {
     const model = genai.getGenerativeModel({
       model: modelName,
@@ -202,7 +209,7 @@ export async function POST(req: Request) {
       },
     });
 
-    const result = await model.generateContent([
+    const generatePromise = model.generateContent([
       {
         inlineData: {
           mimeType: "image/jpeg",
@@ -211,6 +218,17 @@ export async function POST(req: Request) {
       },
       { text: userText },
     ]);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(
+        () => reject(new Error(`model call timed out after ${PER_CALL_TIMEOUT_MS}ms`)),
+        PER_CALL_TIMEOUT_MS,
+      );
+    });
+
+    const result = (await Promise.race([generatePromise, timeoutPromise])) as Awaited<
+      typeof generatePromise
+    >;
 
     const text = result.response.text();
     if (!text) throw new Error("empty model response");
@@ -223,30 +241,28 @@ export async function POST(req: Request) {
     }
   }
 
-  // Try each model in the chain. For each model, retry with backoff
-  // (2s, 4s, 8s) if the error is a transient overload. Move to the next
-  // model on quota errors immediately, since waiting will not help.
+  // Try each model in the chain once. Do a single quick retry (1s) only for
+  // transient overload errors. Move on immediately for quota or hard errors.
+  // Keeping this fast is what prevents 504s at the Vercel edge.
   async function callWithRetryAndFallback(userText: string): Promise<unknown> {
-    const delays = [2000, 4000, 8000];
     let lastErr: unknown = null;
 
     for (const modelName of MODEL_CHAIN) {
-      for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        return await callOnce(modelName, userText);
+      } catch (err) {
+        lastErr = err;
+        // Quota or hard errors: skip to next model immediately.
+        if (isQuotaError(err) || !isRetryableError(err)) {
+          continue;
+        }
+        // One quick retry for transient overloads.
+        await sleep(1000);
         try {
           return await callOnce(modelName, userText);
-        } catch (err) {
-          lastErr = err;
-          // Quota errors: skip to next model immediately.
-          if (isQuotaError(err)) {
-            break;
-          }
-          // Other transient errors: back off and retry on same model.
-          if (attempt < delays.length && isRetryableError(err)) {
-            await sleep(delays[attempt]);
-            continue;
-          }
-          // Non transient error or out of retries on this model: try next.
-          break;
+        } catch (err2) {
+          lastErr = err2;
+          continue;
         }
       }
     }
