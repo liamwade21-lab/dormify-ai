@@ -3,6 +3,7 @@
 import type { DesignItem } from "@/lib/types";
 import { storeUrl, storePillClass } from "@/lib/store";
 import { withAffiliateTag } from "@/lib/affiliate";
+import { categoryIcon } from "@/lib/icons";
 
 interface ProductCardProps {
   item: DesignItem;
@@ -45,7 +46,7 @@ export function ProductCard({ item, delay }: ProductCardProps) {
         }}
         aria-hidden
       >
-        {item.emoji}
+        {categoryIcon(item.name)}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div

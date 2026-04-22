@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import type { DesignItem } from "@/lib/types";
 import { storeUrl, storePillClass } from "@/lib/store";
+import { withAffiliateTag } from "@/lib/affiliate";
+import { categoryIcon } from "@/lib/icons";
 
 interface PricePinProps {
   item: DesignItem;
@@ -25,8 +27,8 @@ export function PricePin({ item, index, ready }: PricePinProps) {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
-  const href = storeUrl(item.store, item.searchQuery);
-  const price = Math.round(item.price);
+  const href = withAffiliateTag(storeUrl(item.store, item.searchQuery));
+  const icon = categoryIcon(item.name);
 
   return (
     <div
@@ -45,7 +47,7 @@ export function PricePin({ item, index, ready }: PricePinProps) {
         <div className="price-pin-expanded" onMouseLeave={() => setOpen(false)}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
             <span style={{ fontSize: 18 }} aria-hidden>
-              {item.emoji}
+              {icon}
             </span>
             <span className={storePillClass(item.store)}>{item.store}</span>
           </div>
@@ -86,7 +88,7 @@ export function PricePin({ item, index, ready }: PricePinProps) {
             <a
               href={href}
               target="_blank"
-              rel="noreferrer noopener"
+              rel="noopener noreferrer sponsored"
               style={{
                 background: "var(--accent)",
                 color: "#0a0907",
@@ -111,8 +113,9 @@ export function PricePin({ item, index, ready }: PricePinProps) {
           }}
           onMouseEnter={() => setOpen(true)}
           aria-label={`${item.name}, $${item.price.toFixed(2)}`}
+          style={{ fontSize: 18, lineHeight: 1 }}
         >
-          ${price}
+          <span aria-hidden>{icon}</span>
         </button>
       )}
     </div>
