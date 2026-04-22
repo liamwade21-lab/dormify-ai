@@ -7,10 +7,10 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 export async function POST() {
-    return NextResponse.json(
-      {
-              error: "image rendering is no longer available. the app now uses your original photo.",
-      },
-      { status: 410 },
-        );
+  return NextResponse.json(
+    {
+      error: "image rendering is no longer available. the app now uses your original photo.",
+    },
+    { status: 410 },
+  );
 }
