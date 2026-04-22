@@ -2,6 +2,7 @@
 
 import type { DesignItem } from "@/lib/types";
 import { storeUrl, storePillClass } from "@/lib/store";
+import { withAffiliateTag } from "@/lib/affiliate";
 
 interface ProductCardProps {
   item: DesignItem;
@@ -9,13 +10,13 @@ interface ProductCardProps {
 }
 
 export function ProductCard({ item, delay }: ProductCardProps) {
-  const href = storeUrl(item.store, item.searchQuery);
+  const href = withAffiliateTag(storeUrl(item.store, item.searchQuery));
 
   return (
     <a
       href={href}
       target="_blank"
-      rel="noreferrer noopener"
+      rel="noopener noreferrer sponsored"
       className="product-card reveal"
       style={{
         display: "flex",

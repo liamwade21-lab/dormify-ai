@@ -687,6 +687,19 @@ function ResultsView(props: ResultsProps) {
           debug: {debugError}
         </div>
       ) : null}
+
+      <div
+        className="reveal"
+        style={{
+          fontSize: 11,
+          color: "var(--text-dim)",
+          textAlign: "center",
+          lineHeight: 1.4,
+          marginTop: 8,
+        }}
+      >
+        as an amazon associate, dormify earns from qualifying purchases.
+      </div>
     </div>
   );
 }
