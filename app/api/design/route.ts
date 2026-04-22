@@ -194,8 +194,7 @@ export async function POST(req: Request) {
       systemInstruction: SYSTEM_PROMPT,
       generationConfig: {
         responseMimeType: "application/json",
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        responseSchema: RESPONSE_SCHEMA as any,
+        responseSchema: RESPONSE_SCHEMA as never,
         temperature: 0.7,
       },
     });
