@@ -294,11 +294,10 @@ function IdleView(props: IdleProps) {
             margin: 0,
           }}
         >
-          your room, but{" "}
+          your room but{" "}
           <span className="italic-serif" style={{ color: "var(--accent)" }}>
-            actually
-          </span>{" "}
-          cute
+            better
+          </span>
         </h1>
         <p
           style={{

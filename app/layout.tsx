@@ -26,7 +26,7 @@ const outfit = Outfit({
 
 export const metadata: Metadata = {
   title: "Dormify AI",
-  description: "your room, but actually cute. ai powered redesign for renters and students.",
+  description: "your room but better. ai powered redesign for renters and students.",
 };
 
 export const viewport: Viewport = {
