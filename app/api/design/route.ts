@@ -8,10 +8,13 @@ export const maxDuration = 60;
 
 // Tried in order. If one hits a quota or overload error, the next is tried.
 // Free tier quotas differ between models, so a chain helps a lot.
+// Note: gemini-1.5-flash was retired from the v1beta API and now returns 404,
+// so the chain uses only current 2.x models plus a lite fallback.
 const MODEL_CHAIN = [
   "gemini-2.5-flash",
   "gemini-2.0-flash",
-  "gemini-1.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash-lite",
 ] as const;
 
 const SYSTEM_PROMPT = `You are the creative director for Dormify AI, a room redesign tool for college students and young renters. You study a room photo and return a styling plan as structured JSON that matches the provided schema.
